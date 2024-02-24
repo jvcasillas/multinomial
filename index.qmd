@@ -1,0 +1,368 @@
+---
+title: "Simple multinomial logistic regression using BDA"
+author: Joseph V. Casillas
+date: 2024-02-24
+format:
+  html:
+    theme: united
+---
+
+First, let's load some libraries and setup our document. 
+
+```{r}
+#| label: setup
+#| message: false
+
+# Doc setup
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  fig.asp = 9/16, 
+  fig.algn = "center", 
+  out.width = "100%"
+)
+
+# Load libs
+library("tidyverse")
+library("ggdist")
+library("brms")
+library("here")
+library("scales")
+library("marginaleffects")
+library("tinytable")
+library("glue")
+
+# Set seed for reproducibility
+set.seed(20240224)
+
+# Set theme for plots
+theme_set(theme_light(base_family = "Palatino"))
+
+# Set some colors
+cols <- c( "#A7C7E7" = "blue", "#355E3B" = "green", "#cc0033" = "red")
+```
+
+Next, we simulate some data for the analysis. 
+
+```{r}
+#| label: data-sim
+
+# dataframe variables
+n_ids       <- 50
+n_lang      <- 2
+n_item_reps <- 15
+probs_en    <- c(0.2, 0.5, 0.8)
+probs_sp    <- c(0.8, 0.2, 0.5)
+choices     <- c("Green", "Blue", "Red")
+
+# Set up dataframe
+dat <- tibble(
+  id = rep(glue::glue("id_{1:n_ids}"), times = n_lang), 
+  Language = rep(c("English", "Spanish"), each = n_ids), 
+  Response = c(
+    sample(x = choices, size = n_ids, replace = TRUE, prob = probs_en), 
+    sample(x = choices, size = n_ids, replace = TRUE, prob = probs_sp)
+  )
+)
+
+```
+
+Let't take a look at what we made.
+
+```{r}
+#| label: tbl-simple-descriptives
+#| tbl-cap: Summary of responses
+
+dat |> 
+  count(Response) |> 
+  mutate(Total = sum(n), Prop = n / Total) |>
+  tt(theme = "bootstrap", width = 0.7) |> 
+  style_tt(j = 2:4, align = "r")
+```
+
+It's clear we see a higher propensity to select `red` overall, but let's make a plot for fun. 
+
+```{r}
+#| label: fig-simple
+#| fig-cap: Probability of a given response in the data set.
+
+dat |> 
+  count(Response) |> 
+  mutate(
+    total = sum(n), 
+    prop = n / total, 
+    Response = fct_reorder(Response, prop)
+  ) |> 
+  ggplot() + 
+  aes(x = prop, color = Response) + 
+  geom_segment(
+    aes(x = 0, xend = prop, y = Response, yend = Response), 
+    lineend = "round", linewidth = 17, show.legend = F, alpha = 0.5
+    ) + 
+  geom_segment(
+    aes(x = 0, xend = prop, y = Response, yend = Response), 
+    lineend = "round", linewidth = 13, show.legend = F
+    ) + 
+  geom_text(aes(y = Response, label = prop), color = "white", show.legend = F) + 
+  scale_color_manual(values = names(cols)) + 
+  scale_x_continuous(breaks = seq(0, 1, 0.1), expand = c(0, 0, 0, 0.05)) + 
+  coord_cartesian(xlim = c(0, 1)) + 
+  labs(y = NULL, x = "Proportion of responses") 
+
+```
+
+Ok. 
+Looks good. 
+We see that, overall, `red` was selected most, followed by `green`, and then `blue`. 
+Now we can build our first Bayesian model.
+We will fit a simple, intercept-only model, ignoring `language` for now. 
+The specification will be as follows: 
+
+$$
+\begin{aligned}
+&\ \textbf{Multinomial probability of selection of color}_i \\
+\text{Color}_{i} \sim&\ \operatorname{Categorical}(\{\mu_{blue,i}, \mu_{green,i}, \mu_{red,i}\}) \\[10pt]
+&\ \textbf{Model for probability of each option} \\
+\{\mu_{blue,i}, \mu_{green,i}, \mu_{red,i}\} =&\ \beta_0 \\[5pt]
+&\ \textbf{Priors} \\
+\beta_{0} \sim&\ \mathcal{N} (0, 2) \qquad\qquad\ \ \text{Prior for choice-level coefficients} \\
+\end{aligned}
+$$
+
+Essentially, the goal of this first model is to get posterior estimates of the probability of selecting `red`, `green`, or `blue`, which should align with what we just saw in @tbl-simple-descriptives and @fig-simple.
+We specify the model as follows.
+
+```{r}
+#| label: mod0
+
+# This is the BRMS syntax of the model highlighted above
+form <- bf(Response ~ 0 + Intercept)
+
+# Use get_prior if you need help figuring out the priors
+# get_prior(formula = form, family = categorical(link = "logit"), data = dat)
+#  prior class      coef     dpar        source
+# (flat)     b            muGreen       default
+# (flat)     b Intercept  muGreen  (vectorized)
+# (flat)     b              muRed       default
+# (flat)     b Intercept    muRed  (vectorized)
+
+
+# Set priors
+simple_priors <- c(
+  prior(normal(0, 2), class = b, dpar = muGreen), 
+  prior(normal(0, 2), class = b, dpar = muRed)
+)
+
+# Fit simple model
+b_multi_0 <- brm(
+  formula = form, 
+  prior = simple_priors, 
+  iter = 2000, warmup = 1000, cores = 4, 
+  data = dat, 
+  family = categorical(link = "logit"), 
+  file = here("b_multi_0")
+)
+
+# Get posterior and store in vector
+mod0_post <- predictions(model = b_multi_0) |>
+  posterior_draws() 
+```
+
+We can take a look at the model output using `summary()`, but it often isn't very helpful with this type of model. 
+
+```{r}
+#| label: print-simple-mod
+summary(b_multi_0)
+```
+
+Let's use summarize the posterior to get an idea of probability of each choice. 
+For fun we will make a table and a plot just like @tbl-simple-descriptives and @fig-simple. 
+They should be essentially the same, but now we are summarizing an entire distribution of estimates, so we can include uncertainty in @tbl-mod0 and @fig-mod0.
+
+```{r}
+#| label: tbl-mod0
+#| tbl-cap: Posterior summary of intercept-only model
+
+mod0_post |> 
+  group_by(group) |> 
+  median_qi(x = draw) |> 
+  transmute(
+    Response = group, 
+    Estimate = glue("{round(x, 3)} [{round(.lower, 3)}, {round(.upper, 3)}]")
+  ) |> 
+  tt(theme = "bootstrap", width = 0.7,  
+     notes = "Posterior median and 95% CI") |> 
+  style_tt(j = 2, align = "r")
+
+```
+
+
+```{r}
+#| label: fig-mod0
+#| fig-cap: Posterior medians of color choice along with 95% and 66% credible intervals. 
+
+mod0_post |> 
+  ggplot() + 
+  aes(x = draw, y = group, fill = group) + 
+  stat_slab(show.legend = F) + 
+  stat_pointinterval(
+    show.legend = F, pch = 21, position = position_nudge(y = -0.05)
+    ) + 
+  scale_fill_manual(values = names(cols)) + 
+  scale_x_continuous(breaks = seq(0, 1, 0.1), labels = label_percent()) + 
+  coord_cartesian(xlim = c(0, 1)) + 
+  labs(y = NULL, x = "p(Color)")
+
+```
+
+It worked!
+Looks good. 
+Now we will fit a more complex model in which we include the language in which the person was asked, Spanish or English, but first let's look at the descriptives. 
+
+```{r}
+#| label: tbl-complete-descriptives
+#| tbl-cap: Summary of responses as a function of language (Spanish, English)
+
+dat |> 
+  group_by(Language) |> 
+  count(Response) %>% 
+  mutate(
+    total = sum(n), prop = n / total, 
+    Language = case_when(
+      Language == "English" & Response == "Blue" ~ "English", 
+      Language == "Spanish" & Response == "Blue" ~ "Spanish", 
+      TRUE ~ ""
+    )
+  ) |> 
+  tt(theme = "bootstrap", width = 0.7) |> 
+  style_tt(j = 2:4, align = "r")
+```
+
+```{r}
+#| label: fig-complete
+#| fig-cap: Average choice (±SE) as a function of language (Spanish, English)
+
+dat |> 
+  group_by(Language) |>
+  count(Response) |> 
+  mutate(
+    total = sum(n), 
+    prop = n / total, 
+    se = sd(prop) / sqrt(n), 
+    .groups = "drop"
+    ) |> 
+  ggplot() + 
+  aes(y = Response, x = prop, color = Response, shape = Language) + 
+  geom_linerange(
+    aes(xmin = prop - se, xmax = prop + se, y = Response),
+    linewidth = 4, lineend = "round", alpha = 0.5, 
+    position = position_dodge(0.5), show.legend = T
+    ) + 
+  geom_point(size = 3, stroke = 2.5, position = position_dodge(0.5)) +
+  scale_color_manual(name = NULL, values = names(cols), guide = "none") + 
+  scale_shape_manual(name = NULL, values = 21:22) + 
+  scale_x_continuous(breaks = seq(0, 1, 0.1), labels = label_percent()) + 
+  coord_cartesian(xlim = c(0, 1)) + 
+  labs(y = NULL, x = NULL) + 
+  theme(legend.position = c(1, 0), legend.justification = c(1, 0), 
+        legend.background = element_blank())
+
+```
+
+Great. 
+So @tbl-complete-descriptives and @fig-complete give us an idea of what's going on (big differences in responding "red" or "green" based on language... again, make-up data). 
+Now we will fit a model that accounts for language. 
+Because language is a within participants variable (every participant was asked in English and Spanish) we will including a grouping variable for `id` with a varying slope of `language`. 
+The model formulation is as follows: 
+
+$$
+\begin{aligned}
+&\ \textbf{Multinomial probability of selection of color}_i \textbf{ in respondent}_j \\
+\text{Choice}_{i_j} \sim&\ \operatorname{Categorical}(\{\mu_{1,i_j}, \mu_{2,i_j}, \mu_{3,i_j}\}) \\[10pt]
+&\ \textbf{Model for probability of each option} \\
+\{\mu_{1,i_j}, \mu_{2,i_j}, \mu_{3,i_j}\} =&\ (\beta_0 + b_{0_j}) + \beta_1 \text{Language[Spanish]}_{i_j} \\[5pt]
+b_{0_j} \sim&\ \mathcal{N}(0, \sigma_0) \qquad\quad\quad \text{Respondent-specific offsets from global probability} \\[10pt]
+&\ \textbf{Priors} \\
+\beta_{0 \dots 1} \sim&\ \mathcal{N} (0, 2) \qquad\qquad\ \ \text{Prior for choice-level coefficients} \\
+\sigma_0 \sim&\ \operatorname{Exponential}(1) \quad \text{Prior for between-respondent variability}
+\end{aligned}
+$$
+
+Now we fit the model in `brms`. 
+
+```{r}
+#| label: mod1
+
+# Specify model formula
+form2 <- bf(Response ~ 0 + Intercept + Language + (1 + Language | ID | id))
+
+# Use get_prior with unsure about priors
+# get_prior(formula = form2, family = categorical(link = "logit"), data = dat) 
+# class            coef         dpar                 source
+#   cor                                             default
+#   cor                                         (vectorized)
+#     b                      muGreen                default
+#     b       Intercept      muGreen            (vectorized)
+#     b LanguageSpanish      muGreen            (vectorized)
+#    sd                      muGreen                default
+#    sd                      muGreen            (vectorized)
+#    sd       Intercept      muGreen            (vectorized)
+#    sd LanguageSpanish      muGreen            (vectorized)
+#     b                        muRed                default
+#     b       Intercept        muRed            (vectorized)
+#     b LanguageSpanish        muRed            (vectorized)
+#    sd                        muRed                default
+#    sd                        muRed            (vectorized)
+#    sd       Intercept        muRed            (vectorized)
+#    sd LanguageSpanish        muRed            (vectorized)
+
+# Fit model
+b_multi_1 <- brm(
+  formula = form2,  
+  prior = c(
+    prior(normal(0, 2), class = b, dpar = muGreen), 
+    prior(normal(0, 2), class = b, dpar = muRed), 
+    prior(exponential(1), class = sd, dpar = muGreen), 
+    prior(exponential(1), class = sd, dpar = muRed), 
+    prior(lkj(1), class = cor)
+  ), 
+  iter = 2000, warmup = 1000, cores = 4, 
+  data = dat, 
+  family = categorical(link = "logit"), 
+  file = here("b_multi_1")
+  )
+
+```
+
+Let's take a look at the model summary: 
+
+```{r}
+#| label: print-mod1
+summary(b_multi_1)
+```
+
+And a plot to see how or model compares to the descriptives: 
+
+```{r}
+#| label: fig-mod1
+#| fig-cap: Posterior medians of color choice as a function of language along with 95% and 66% credible intervals
+
+avg_predictions(
+  model = b_multi_1, 
+  variables = "Language", 
+  re_formula = NULL
+  ) |>
+  posterior_draws() |> 
+  ggplot() + 
+  aes(x = draw, y = group, fill = group, group = Language, shape = Language) + 
+  stat_halfeye(position = position_dodge(0.5), point_fill = "white") + 
+  scale_fill_manual(name = NULL, values = names(cols), guide = "none") + 
+  scale_shape_manual(name = NULL, values = 21:22) + 
+  scale_x_continuous(breaks = seq(0, 1, 0.1), labels = label_percent()) + 
+  coord_cartesian(xlim = c(0, 1)) + 
+  labs(y = NULL, x = "p(Color|Language)") + 
+  theme(legend.position = c(1, 0), legend.justification = c(1, 0), 
+        legend.background = element_blank())
+
+```
+
+It looks like @fig-mod1 captures what we saw qualitatively in @tbl-complete-descriptives and @fig-complete. 
