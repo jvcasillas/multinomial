@@ -354,7 +354,7 @@ Let's take a look at the model summary:
 summary(b_multi_1)
 ```
 
-And a plot to see how or model compares to the descriptives: 
+And a plot to see how our model compares to the descriptives: 
 
 ```{r}
 #| label: fig-mod1
@@ -380,3 +380,25 @@ avg_predictions(
 ```
 
 It looks like @fig-mod1 captures what we saw qualitatively in @tbl-complete-descriptives and @fig-complete. 
+Let's finish by comparing the difference between languages for each color. 
+
+```{r}
+#| label: fig-diff-plot
+#| fig-cap: Marginal mean difference of color preference (Spanish $-$ English).
+
+avg_slopes(
+    model = b_multi_1, 
+    variables = "Language", 
+    re_formula = NA
+  ) |> 
+  posterior_draws() |> 
+  ggplot() + 
+  aes(x = draw, y = group, fill = group) + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  stat_halfeye(show.legend = F, pch = 21, point_fill = "white") + 
+  scale_fill_manual(name = NULL, values = names(cols)) + 
+  scale_x_continuous(breaks = seq(-1, 1, 0.2), labels = label_percent()) + 
+  coord_cartesian(xlim = c(-1, 1)) + 
+  labs(y = NULL, x = "Marginal mean difference:\nSpanish - English")
+```
+
