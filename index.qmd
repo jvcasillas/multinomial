@@ -66,7 +66,21 @@ dat <- tibble(
 
 ```
 
-Let't take a look at what we made.
+We are going to pretend we did some sort of experiment in which we asked bilingual people their favorite cup out of three options: a red cup, a green cup, and a blue cup. 
+We will assume the cups are exactly the same except for the colors. 
+A priori, there is no reason to think that people would have different preferences based on which language they are asked in, but this is made up data, so we'll ignore that for now. 
+Let's take a look at what we made.
+
+```{r}
+#| label: get-to-know-data
+
+head(dat)
+glimpse(dat)
+```
+
+We have a tidy data frame with 3 columns (i.e., 3 variables). 
+There is data from 50 individuals, in each of their languages (Spanish, English), leaving us with 50 $\times$ 2 = 100 observations. 
+Now let's get some general descriptives.
 
 ```{r}
 #| label: tbl-simple-descriptives
